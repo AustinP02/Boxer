@@ -4,9 +4,9 @@ import runpy
 import sys
 from pathlib import Path
 
-TOOLS = {"alignment": "check_alignment.py", "sort": "color_sorter.py", "feed": "live_feed.py",
+TOOLS = {"pickup": "pickup_demo.py", "alignment": "check_alignment.py", "sort": "color_sorter.py", "feed": "live_feed.py",
          "scan": "sample_scan.py", "arc": "inspection_arc.py",
-         "analyze": "analyze_media.py", "templates": "build_shape_templates.py"}
+         "analyze": "analyze_media.py", "templates": "build_shape_templates.py", "green": "green_to_container.py"}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

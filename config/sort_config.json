@@ -22,7 +22,7 @@
         212,
         269
       ],
-      "rim_z_mm": 122.29759643261667
+      "rim_z_mm": 67.37008156544425
     },
     {
       "roi": [
@@ -31,19 +31,19 @@
         205,
         267
       ],
-      "rim_z_mm": 118.47082122240853
+      "rim_z_mm": 63.58653342192505
     }
   ],
   "destinations": {},
   "depth_aligned_verified": true,
-  "grasp_offset_mm": null,
+  "grasp_offset_mm": -15.0,
   "pick_orientation": {
     "o_x": -0.04284880561496688,
     "o_y": -0.08023701766185716,
     "o_z": -0.9958544074582898,
     "theta": 62.05764094580942
   },
-  "transit_z_mm": 464.242904070853,
+  "transit_z_mm": 409.47091166064706,
   "max_grasp_width_mm": 60,
   "max_object_span_mm": 120,
   "jaw_margin_px": 15,
@@ -54,8 +54,8 @@
   "destination_reference": {},
   "release_above_rim_mm": 20,
   "motion_commissioned": false,
-  "destination_release_z_mm": 111.61224380981761,
-  "destination_floor_z_mm": 56.61224380981761,
+  "destination_release_z_mm": 56.639194083392304,
+  "destination_floor_z_mm": 1.6391940833923044,
   "shared_bin_heights_verified": true,
   "container_dimensions_mm": {
     "source": [
@@ -68,5 +68,28 @@
       52,
       35
     ]
+  },
+  "tool_height_rebase": {
+    "old_mount_z_mm": 105,
+    "new_mount_z_mm": 160,
+    "records": {
+      "source-1-rim": {
+        "old_world_z_mm": 122.29759643261667,
+        "tool_direction_z": -0.9986820884940438
+      },
+      "source-2-rim": {
+        "old_world_z_mm": 118.47082122240853,
+        "tool_direction_z": -0.9978961418269724
+      },
+      "destination": {
+        "old_world_z_mm": 111.61224380981761,
+        "tool_direction_z": -0.9995099950259148
+      },
+      "transit": {
+        "old_world_z_mm": 464.242904070853,
+        "tool_direction_z": -0.9958544074582898
+      }
+    },
+    "note": "Converted recorded tool poses, not a correction to camera depth or world coordinates"
   }
 }

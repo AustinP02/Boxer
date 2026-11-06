@@ -46,6 +46,20 @@ def scan_poses(start, travel_y=30, drop_z=15, side_x=5, steps=7):
     return result
 
 
+def motion_world_state(inspected_world):
+    """Send runtime obstacles only; Viam already includes configured fixtures.
+
+    inspect_setup retains fixture geometry for local measurements/diagnostics.
+    Sending those same named geometries back to Move causes duplicate-name
+    failures. Keep any runtime tray walls and attached-object transforms.
+    """
+    request=WorldState()
+    request.transforms.extend(inspected_world.transforms)
+    request.obstacles.extend(o for o in inspected_world.obstacles
+                             if o.reference_frame not in OBSTACLES)
+    return request
+
+
 async def inspect_setup(machine, motion):
     frames = await asyncio.wait_for(machine.get_frame_system_config(), timeout=20)
     transforms = {item.frame.reference_frame: item.frame for item in frames}
@@ -112,7 +126,7 @@ async def run(args):
                 success = await motion.move(
                     component_name='arm',
                     destination=PoseInFrame(reference_frame='world', pose=goal),
-                    world_state=world,
+                    world_state=motion_world_state(world),
                     extra={'motion_profile': 'linear'}, timeout=60)
                 if not success:
                     raise RuntimeError('Motion service did not confirm success')

@@ -63,5 +63,21 @@ class ScanBoundaryTests(unittest.TestCase):
             sample_scan.scan_poses(Pose(), travel_y=500)
 
 
+    def test_move_world_omits_configured_fixtures_and_preserves_runtime_geometry(self):
+        from viam.proto.common import GeometriesInFrame, Geometry, Transform
+        world=WorldState(obstacles=[
+            GeometriesInFrame(reference_frame=name,geometries=[Geometry(label=name)])
+            for name in sample_scan.OBSTACLES])
+        world.obstacles.append(GeometriesInFrame(reference_frame='world',
+            geometries=[Geometry(label='runtime-tray')]))
+        world.transforms.append(Transform(reference_frame='held-object'))
+        request=sample_scan.motion_world_state(world)
+        self.assertEqual([o.reference_frame for o in request.obstacles],['world'])
+        self.assertEqual(request.obstacles[0].geometries[0].label,'runtime-tray')
+        self.assertEqual(request.transforms,world.transforms)
+        self.assertEqual(len(world.obstacles),5)
+        self.assertEqual(world.obstacles[0].geometries[0].label,'table')
+
+
 if __name__ == '__main__':
     unittest.main()

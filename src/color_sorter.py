@@ -23,7 +23,7 @@ from viam.components.camera import Camera
 from viam.components.gripper import Gripper
 from viam.services.motion import MotionClient
 from viam.proto.common import Pose, PoseInFrame, WorldState, GeometriesInFrame, Geometry, RectangularPrism, Vector3, Transform
-from sample_scan import inspect_setup
+from sample_scan import inspect_setup, motion_world_state
 from sort_vision import decode_depth, detect_source_items, overlay, container_contents, choose_destination
 from container_detector import ContainerDetector, build_profile, validate_layout, preview_layout
 from rim_fusion import fuse_rims, standalone_black_rims, resolve_geometric_roles
@@ -38,6 +38,7 @@ ORDER = ['red','yellow','blue','green']
 
 
 from tracking_render import draw_layout
+from floor_placement import footprint_offsets, floor_context, choose_placement
 
 
 def ruler_check(args):
@@ -121,6 +122,22 @@ def check_ready(config):
                 [config['destination_release_z_mm']+80])
     if config['transit_z_mm'] < floor:
         raise ValueError(f'Taught transit Z must be at least {floor:.1f} mm for clearance')
+
+
+def source_height_error(item, source, config):
+    """Compare vision and taught tool coordinates before using a grasp target."""
+    height=config.get('container_dimensions_mm',{}).get('source',[0,0,0])[2]
+    rim=source.get('rim_z_mm')
+    if not height or rim is None or 'world_mm' not in item:
+        return None
+    floor=rim-height
+    top=item['world_mm'][2]
+    if top < floor-5:
+        return 'detected top below taught source floor; check gripper/camera frames'
+    offset=config.get('grasp_offset_mm')
+    if offset is not None and top+offset < floor+5:
+        return 'grasp target too close to taught source floor'
+    return None
 
 
 def setup(config):
@@ -252,6 +269,10 @@ async def snapshot(machine, camera, motion, config, detector=None,allow_partial=
     for item in items:
         if 'camera_mm' in item:
             item['world_mm'] = (origin+basis@np.array(item['camera_mm'])).tolist()
+            item['footprint_world_offsets_mm']=footprint_offsets(item,origin,basis,intrinsic)
+            height_error=source_height_error(item,sources[item['source']],config)
+            if height_error:
+                item['rejected'].append(height_error)
         else:
             item['rejected'].append('3D localization unavailable')
     end = await motion.get_pose('cam','world',timeout=15)
@@ -262,12 +283,20 @@ async def snapshot(machine, camera, motion, config, detector=None,allow_partial=
     if layout:
         layout['destinations']=[container_contents(frame,d,config,depth,intrinsic,origin,basis)
                                 for d in layout['destinations']]
+        config['_floor_contexts']={d['id']:floor_context(d,depth,config.get('destination_floor_z_mm'),
+                origin,basis,intrinsic) for d in layout['destinations']}
         for item in items:
-            radius=math.hypot(*item['size_mm'])/2+5 if 'size_mm' in item else None
-            destination=choose_destination(item['color'],layout['destinations'],radius)
+            destination=choose_placement(item['color'],layout['destinations'],
+                item.get('footprint_world_offsets_mm'),config['_floor_contexts'])
             item['destination_bin']=destination['id'] if destination else None
-            if destination is None:
-                item['rejected'].append('no matching-color or verified-empty destination')
+            if destination is not None:
+                item['placement']={k:destination[k] for k in ('free_center','free_world_xy_mm',
+                    'placement_method','placement_margin_mm')}
+            else:
+                eligible_bins=[d for d in layout['destinations'] if d['colors']==[item['color']]
+                    or (not d['colors'] and d['empty_verified'])]
+                item['rejected'].append('no verified destination with footprint clearance' if eligible_bins
+                    else 'no matching-color or verified-empty destination')
     report = dict(time=datetime.now().isoformat(),camera_pose=pose_dict(cam_pose),items=items,
                   layout=layout,origin=origin.tolist(),basis=basis.tolist(),intrinsics=intrinsic,
                   has_aligned_depth=depth is not None,detection_debug=config.get('_detection_debug',{}),
@@ -366,20 +395,23 @@ def dimension_filter(detections,config,intrinsic,origin,basis):
 
 def tray_walls(config,origin,basis,intrinsic):
     geometries=[]
-    for source in config.get('_current_sources',config['sources']):
+    for source_index,source in enumerate(config.get('_current_sources',config['sources'])):
         x,y,w,h=source['roi']; z=source['rim_z_mm']
-        corners=[ray_plane(p,z,intrinsic,origin,basis) for p in
-                 ((x,y),(x+w,y),(x+w,y+h),(x,y+h))]
+        polygon=source.get('polygon') or [(x,y),(x+w,y),(x+w,y+h),(x,y+h)]
+        corners=[ray_plane(p,z,intrinsic,origin,basis) for p in polygon]
         # Conservative 150 mm-tall walls descend from the taught rim.
-        for a,b in zip(corners,corners[1:]+corners[:1]):
+        for wall_index,(a,b) in enumerate(zip(corners,corners[1:]+corners[:1])):
             center=(a+b)/2
-            geometries.append(Geometry(center=Pose(x=center[0],y=center[1],z=z-75,
+            geometries.append(Geometry(label=f'sort-source-{source_index}-wall-{wall_index}',center=Pose(x=center[0],y=center[1],z=z-75,
                 o_z=1,theta=math.degrees(math.atan2(b[1]-a[1],b[0]-a[0]))),
                 box=RectangularPrism(dims_mm=Vector3(x=float(np.linalg.norm(b-a)),y=6,z=150))))
     return GeometriesInFrame(reference_frame='world',geometries=geometries)
 
 
-async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,intrinsic):
+async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,intrinsic,ignore_approach_depth=False):
+    height_error=source_height_error(item,config['sources'][item['source']],config)
+    if height_error:
+        raise ValueError(height_error)
     x,y,z=item['world_mm']
     transit=config['transit_z_mm']
     orientation=config['pick_orientation']
@@ -390,8 +422,8 @@ async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,int
     approach=clone_pose(pick,z=max(z+config['approach_mm'],source['rim_z_mm']+50))
     if transit < approach.z+20:
         raise ValueError('Transit height too low for object approach')
-    required_radius=math.hypot(*item['size_mm'])/2+5
-    destination=choose_destination(item['color'],config['_current_layout']['destinations'],required_radius)
+    destination=choose_placement(item['color'],config['_current_layout']['destinations'],
+        item.get('footprint_world_offsets_mm'),config['_floor_contexts'])
     if destination is None:
         raise RuntimeError('Destination no longer available')
     rim_z=config['destination_release_z_mm']-config['release_above_rim_mm']
@@ -403,7 +435,7 @@ async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,int
     async def move(pose):
         ok=await motion.move(component_name='gripper',
             destination=PoseInFrame(reference_frame='world',pose=pose),
-            world_state=local,extra={'motion_profile':'linear'},timeout=60)
+            world_state=motion_world_state(local),extra={'motion_profile':'linear'},timeout=60)
         if not ok:
             raise RuntimeError('Motion planner did not confirm success')
 
@@ -434,7 +466,10 @@ async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,int
     measured=depth_frame[v-2:v+3,u-2:u+3]
     good=measured[(measured>100)&(measured<2000)]
     if np.mean(mask>0)<0.7 or len(good)<15 or abs(float(np.median(good))-point[2])>5:
-        raise RuntimeError('Target appearance/depth changed at approach; stopped without closing')
+        message='Target appearance/depth changed at approach'
+        if not ignore_approach_depth:
+            raise RuntimeError(message+'; stopped without closing')
+        print('WARNING (ignored): '+message,flush=True)
     await move(pick)
     if not await gripper.grab(timeout=20):
         raise RuntimeError('Gripper reported no object; stopped without transfer or release')
@@ -457,10 +492,11 @@ async def pick_one(machine,arm,gripper,motion,world,config,item,origin,basis,int
     # Reacquire all containers while holding, so a pre-pick destination cannot
     # silently become the drop target after it has been moved.
     if not await motion.move(component_name='arm',destination=PoseInFrame(reference_frame='world',
-            pose=Pose(**config['scan_pose'])),world_state=local,timeout=60):
+            pose=Pose(**config['scan_pose'])),world_state=motion_world_state(local),timeout=60):
         raise RuntimeError('Cannot return to scan view while holding')
     _,origin,basis,intrinsic=await snapshot(machine,camera,motion,config,config['_detector'])
-    destination=choose_destination(item['color'],config['_current_layout']['destinations'],required_radius)
+    destination=choose_placement(item['color'],config['_current_layout']['destinations'],
+        item.get('footprint_world_offsets_mm'),config['_floor_contexts'])
     if destination is None:
         raise RuntimeError('No verified matching/empty destination after rescan; stopped while holding')
     now=ray_plane(destination['free_center'],config['destination_floor_z_mm'],intrinsic,origin,basis)
@@ -527,7 +563,7 @@ async def run(args,config):
         for index in range(iterations):
             if moving:
                 ok=await motion.move(component_name='arm',destination=PoseInFrame(
-                    reference_frame='world',pose=Pose(**config['scan_pose'])),world_state=world,timeout=60)
+                    reference_frame='world',pose=Pose(**config['scan_pose'])),world_state=motion_world_state(world),timeout=60)
                 if not ok:
                     raise RuntimeError('Cannot reach scan pose')
                 await asyncio.sleep(1)

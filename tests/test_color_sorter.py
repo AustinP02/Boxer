@@ -118,5 +118,16 @@ class SorterTests(unittest.TestCase):
 
 
 
+    def test_height_disagreement_is_rejected_before_grasp(self):
+        config={'container_dimensions_mm':{'source':[138,108,60]},'grasp_offset_mm':-15}
+        source={'rim_z_mm':122.3}
+        self.assertIn('below taught source floor',color_sorter.source_height_error(
+            {'world_mm':[384,137,32.8]},source,config))
+        self.assertIn('too close',color_sorter.source_height_error(
+            {'world_mm':[384,137,72]},source,config))
+        self.assertIsNone(color_sorter.source_height_error(
+            {'world_mm':[384,137,95]},source,config))
+
+
 if __name__=='__main__':
     unittest.main()
