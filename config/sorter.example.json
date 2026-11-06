@@ -86,16 +86,16 @@
       "height": 60,
       "wall_thickness": 2,
       "height_reference": "tabletop",
-      "width_length_reference": "unconfirmed",
+      "width_length_reference": "outside",
       "bottom_thickness": null
     },
     "destination": {
       "width": 52,
       "length": 138,
       "height": 35,
-      "wall_thickness": null,
+      "wall_thickness": 2,
       "height_reference": "tabletop",
-      "width_length_reference": "unconfirmed",
+      "width_length_reference": "outside",
       "bottom_thickness": null
     }
   }

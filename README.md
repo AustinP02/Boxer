@@ -83,8 +83,8 @@ use a trained container ML model or trust depth readings from transparent plasti
 
 Confirmed tabletop-to-rim heights are **60 mm for sources** and **35 mm for destinations**.
 Reported widths/lengths are 108 x 138 mm for sources and 52 x 138 mm for outputs. They are
-stored under `layout_detection`; width/length inside-versus-outside reference is still
-unconfirmed, as are destination wall thickness and both types' bottom thickness.
+stored under `layout_detection` as **outside dimensions**, with **2 mm walls for both
+container types**. Only the bottom thicknesses remain unconfirmed.
 
 Requirements for this initial detector:
 
