@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "address": "armfarm4-main.310sld03v2.viam.cloud",
+  "arm": "arm",
+  "gripper": "gripper",
+  "camera": "cam",
+  "motion": "builtin",
+  "calibration_reviewed": false,
+  "camera_frame_verified": false,
+  "travel_z_mm": null,
+  "colors": {
+    "blue": {
+      "hex": "#0000FF",
+      "detector": "boxer-blue"
+    },
+    "green": {
+      "hex": "#00FF00",
+      "detector": "boxer-green"
+    },
+    "yellow": {
+      "hex": "#FFFF00",
+      "detector": "boxer-yellow"
+    },
+    "red": {
+      "hex": "#FF0000",
+      "detector": "boxer-red"
+    }
+  },
+  "perception": {
+    "hue_tolerance": 0.055,
+    "min_saturation": 0.3,
+    "min_value": 0.18,
+    "voxel_mm": 2,
+    "cluster_radius_mm": 5,
+    "min_points": 30,
+    "min_object_mm": 8,
+    "max_object_mm": 130
+  },
+  "grasp": {
+    "max_width_mm": 70,
+    "finger_margin_mm": 8,
+    "insertion_mm": 12,
+    "floor_clearance_mm": 8,
+    "wall_clearance_mm": 35,
+    "center_support_mm": 6,
+    "neighbor_clearance_mm": 15,
+    "payload_below_tcp_mm": 80,
+    "yaw_offset_deg": 0
+  },
+  "motion_limits": {
+    "timeout_s": 60,
+    "settle_s": 0.8,
+    "clearance_mm": 50,
+    "linear_tolerance_mm": 2
+  },
+  "sources": {
+    "source-1": {
+      "container": null,
+      "observe_pose": null
+    },
+    "source-2": {
+      "container": null,
+      "observe_pose": null
+    }
+  },
+  "bins": {
+    "bin-1": {
+      "container": null,
+      "drop_pose": null
+    },
+    "bin-2": {
+      "container": null,
+      "drop_pose": null
+    },
+    "bin-3": {
+      "container": null,
+      "drop_pose": null
+    },
+    "bin-4": {
+      "container": null,
+      "drop_pose": null
+    }
+  },
+  "state_file": "../state/bin-state.json"
+}
