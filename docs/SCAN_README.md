@@ -17,13 +17,13 @@ frames against the real table/walls. The planner only sees modeled geometry.
 Inspect configuration and print absolute goals without motion:
 
 ```powershell
-.\.venv\Scripts\python.exe .\sample_scan.py
+.\.venv\Scripts\python.exe .\boxer.py scan
 ```
 
 Run the physical sample, if measured starting clearance is 100 mm:
 
 ```powershell
-.\.venv\Scripts\python.exe .\sample_scan.py --execute --clearance-mm 100
+.\.venv\Scripts\python.exe .\boxer.py scan --execute --clearance-mm 100
 ```
 
 Replace 100 with your measured clearance. The minimum accepted value is Z drop
@@ -54,9 +54,9 @@ silhouette against ALL reference classes, regardless of its detected color.
 Ambiguous, unfamiliar, and clipped silhouettes remain uncertain. Match distance
 is a heuristic, not a calibrated probability. Labels have a question mark.
 
-Run from Boxer using `.\.venv\Scripts\python.exe .\live_feed.py`.
+Run from Boxer using `.\.venv\Scripts\python.exe .\boxer.py feed`.
 R selects a table region; M shows masks; C clears the region; Q quits. S saves an
-image plus detection JSON in `scan_captures`. Move the camera using your existing
+image plus detection JSON in `outputs/scan_captures`. Move the camera using your existing
 robot controls and save separate overhead, oblique, left, right, and near-side
 views. These views are not automatically fused or reconstructed into 3D.
 
@@ -70,7 +70,7 @@ lower Z toward a side view while pointing the camera toward the target.
 an ARBITRARY target and dimensions for mathematical inspection, not robot goals:
 
 ```powershell
-.\.venv\Scripts\python.exe .\inspection_arc.py --target 0 0 0 --far 450 --near 250 --side 30
+.\.venv\Scripts\python.exe .\boxer.py arc --target 0 0 0 --far 450 --near 250 --side 30
 ```
 
 Camera positions follow a 75-degree vertical arc with decreasing radius. X has a

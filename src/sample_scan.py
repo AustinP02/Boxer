@@ -23,7 +23,8 @@ from viam.proto.common import Pose, PoseInFrame, GeometriesInFrame, WorldState
 from live_feed import get_color_frame
 from block_detector import detect_blocks, draw_detections
 
-ROOT = Path(__file__).resolve().parent
+from project_paths import PROJECT_ROOT, OUTPUT_DIR
+ROOT = PROJECT_ROOT
 OBSTACLES = ('table', 'wall-front', 'wall-side', 'ceiling')
 
 
@@ -97,8 +98,8 @@ async def run(args):
             return
         if args.clearance_mm is None or not math.isfinite(args.clearance_mm) or args.clearance_mm < args.drop_z+50:
             raise ValueError('Supply measured --clearance-mm, at least Z drop + 50 mm, below the lowest tool/camera part')
-        folder = ROOT / 'scan_captures' / datetime.now().strftime('sample_%Y%m%d_%H%M%S_%f')
-        folder.mkdir(parents=True)
+        folder = OUTPUT_DIR / 'scan_captures' / datetime.now().strftime('sample_%Y%m%d_%H%M%S_%f')
+        folder.mkdir(parents=True, exist_ok=True)
         (folder/'setup.json').write_text(json.dumps(setup, indent=2))
         # Documented xArm module command. Fail rather than silently using a fast default.
         await arm.do_command({'set_speed': 5.0}, timeout=15)

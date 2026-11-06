@@ -11,7 +11,8 @@ from viam.robot.client import RobotClient
 from viam.components.camera import Camera
 from block_detector import detect_blocks, draw_detections
 
-load_dotenv(Path(__file__).with_name('.env'))
+from project_paths import PROJECT_ROOT, OUTPUT_DIR
+load_dotenv(PROJECT_ROOT / '.env')
 
 
 async def get_color_frame(cam):
@@ -62,8 +63,8 @@ async def main():
                 if not show_mask:
                     cv2.destroyWindow('color mask')
             if key == ord('s'):
-                folder = Path(__file__).with_name('scan_captures')
-                folder.mkdir(exist_ok=True)
+                folder = OUTPUT_DIR / 'scan_captures'
+                folder.mkdir(parents=True, exist_ok=True)
                 stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
                 stem = folder / stamp
                 if not cv2.imwrite(str(stem.with_suffix('.jpg')), frame):

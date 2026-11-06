@@ -15,7 +15,8 @@ COLORS = {
 
 @lru_cache(maxsize=1)
 def shape_templates():
-    path = Path(__file__).with_name('shape_templates.json')
+    from project_paths import MODELS_DIR
+    path = MODELS_DIR / 'shape_templates.json'
     return json.loads(path.read_text()) if path.exists() else []
 
 

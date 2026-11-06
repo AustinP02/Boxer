@@ -1,0 +1,72 @@
+{
+  "scan_pose": {
+    "x": 255.78,
+    "y": 260.58,
+    "z": 568.82,
+    "o_x": -0.04,
+    "o_y": -0.08,
+    "o_z": -1,
+    "theta": -117.94
+  },
+  "destination_order": [
+    "red",
+    "yellow",
+    "blue",
+    "green"
+  ],
+  "sources": [
+    {
+      "roi": [
+        498,
+        98,
+        212,
+        269
+      ],
+      "rim_z_mm": 122.29759643261667
+    },
+    {
+      "roi": [
+        724,
+        96,
+        205,
+        267
+      ],
+      "rim_z_mm": 118.47082122240853
+    }
+  ],
+  "destinations": {},
+  "depth_aligned_verified": true,
+  "grasp_offset_mm": null,
+  "pick_orientation": {
+    "o_x": -0.04284880561496688,
+    "o_y": -0.08023701766185716,
+    "o_z": -0.9958544074582898,
+    "theta": 62.05764094580942
+  },
+  "transit_z_mm": 464.242904070853,
+  "max_grasp_width_mm": 60,
+  "max_object_span_mm": 120,
+  "jaw_margin_px": 15,
+  "min_area_px": 300,
+  "approach_mm": 80,
+  "max_depth_spread_mm": 20,
+  "layout_mode": "ml",
+  "destination_reference": {},
+  "release_above_rim_mm": 20,
+  "motion_commissioned": false,
+  "destination_release_z_mm": 111.61224380981761,
+  "destination_floor_z_mm": 56.61224380981761,
+  "shared_bin_heights_verified": true,
+  "container_dimensions_mm": {
+    "source": [
+      138,
+      108,
+      60
+    ],
+    "destination": [
+      138,
+      52,
+      35
+    ]
+  }
+}

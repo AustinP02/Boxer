@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 import cv2
 from block_detector import detect_blocks
+from project_paths import MODELS_DIR
 
 
 def collect(frame, labels, output, source):
@@ -40,5 +41,5 @@ if __name__ == '__main__':
     if frame is None:
         raise SystemExit('Cannot open reference photo')
     collect(frame, {'green': 'notched'}, templates, 'example-photo')
-    Path(__file__).with_name('shape_templates.json').write_text(json.dumps(templates))
+    (MODELS_DIR / 'shape_templates.json').write_text(json.dumps(templates))
     print(f'Saved {len(templates)} shape references')

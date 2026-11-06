@@ -7,7 +7,8 @@ from viam.components.arm import Arm
 from viam.components.gripper import Gripper
 from viam.proto.component.arm import JointPositions
 
-load_dotenv()
+from pathlib import Path
+load_dotenv(Path(__file__).resolve().parents[1] / '.env')
 
 ADDRESS = os.environ["VIAM_ADDRESS"]
 API_KEY = os.environ["VIAM_API_KEY"]

@@ -1,0 +1,4 @@
+viam-sdk
+python-dotenv
+opencv-python
+numpy
