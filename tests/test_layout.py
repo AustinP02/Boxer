@@ -162,3 +162,33 @@ def test_rim_duplicate_overlap_handles_shared_corners_and_containment():
     inner = np.array([[0, 3], [50, 3], [50, 140], [0, 140]], dtype=float)
     assert _overlap(outer, inner) == pytest.approx(1)
     assert _overlap(outer, outer + 1000) == 0
+
+
+def test_layout_selection_skips_high_score_overlapping_alternative():
+    from boxer.layout import select_layout
+
+    def rectangle(kind, x, y, w, h, score):
+        quad = np.array(
+            [[x - w / 2, y - h / 2], [x + w / 2, y - h / 2], [x + w / 2, y + h / 2], [x - w / 2, y + h / 2]]
+        )
+        return {
+            "kind": kind,
+            "center_xy_mm": [x, y],
+            "quad_world_mm": np.column_stack((quad, np.zeros(4))).tolist(),
+            "score": score,
+            "colored_fraction": 0.5 if kind == "source" else 0,
+        }
+
+    sources = [rectangle("source", x, 80, 108, 138, 0.9) for x in (-60, 60)]
+    outputs = [rectangle("destination", x, -90, 52, 138, 0.9) for x in (-90, -30, 30, 90)]
+    false = rectangle("destination", -20, -90, 52, 138, 0.99)
+    dimensions = {"source": {"width": 108, "length": 138}, "destination": {"width": 52, "length": 138}}
+    selected, reason = select_layout([*sources, *outputs, false], dimensions)
+    assert reason is None and len(selected) == 6
+    assert all(item is not false for item in selected)
+    assert {tuple(c["center_xy_mm"]) for c in selected if c["kind"] == "destination"} == {
+        (-90, -90),
+        (-30, -90),
+        (30, -90),
+        (90, -90),
+    }

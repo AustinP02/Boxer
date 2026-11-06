@@ -248,7 +248,7 @@ def detect_rectangles(rgb, intrinsics, rotation, origin, table, dimensions):
     for candidate in sorted(candidates, key=lambda c: -c["score"]):
         quad = np.array(candidate["quad_world_mm"])[:, :2]
         if any(
-            c["kind"] == candidate["kind"] and _overlap(quad, np.array(c["quad_world_mm"])[:, :2]) > 0.5
+            c["kind"] == candidate["kind"] and _overlap(quad, np.array(c["quad_world_mm"])[:, :2]) > 0.85
             for c in retained
         ):
             continue
@@ -277,16 +277,29 @@ def _container_group(candidates, kind, count, width):
                 continue
             compatible.append((float(displacement @ short), candidate))
         compatible.sort(key=lambda item: item[0])
-        for start in range(len(compatible) - count + 1):
-            window = compatible[start : start + count]
-            spacing = np.diff([position for position, _ in window])
-            if np.any(spacing < width - 6) or np.any(spacing > width + 20):
-                continue
-            group = [candidate for _, candidate in window]
-            key = tuple(sorted(id(c) for c in group))
-            if key not in seen:
-                seen.add(key)
-                groups.append((group, long, short))
+
+        def extend(chosen, start, compatible=compatible, long=long, short=short):
+            if len(chosen) == count:
+                group = [candidate for _, candidate in chosen]
+                key = tuple(sorted(id(c) for c in group))
+                if key not in seen:
+                    seen.add(key)
+                    groups.append((group, long, short))
+                return
+            for i in range(start, len(compatible)):
+                position, candidate = compatible[i]
+                if chosen:
+                    gap = position - chosen[-1][0]
+                    if gap < width - 6:
+                        continue
+                    if gap > width + 20:
+                        break
+                quad = np.array(candidate["quad_world_mm"])[:, :2]
+                if any(_overlap(quad, np.array(other["quad_world_mm"])[:, :2]) > 1e-8 for _, other in chosen):
+                    continue
+                extend([*chosen, (position, candidate)], i + 1)
+
+        extend([], 0)
     return groups
 
 
@@ -307,7 +320,7 @@ def select_layout(candidates, dimensions):
         if abs(offset @ short) > dimensions["source"]["width"] / 2:
             continue
         if any(
-            _overlap(np.array(s["quad_world_mm"])[:, :2], np.array(b["quad_world_mm"])[:, :2]) > 0.1
+            _overlap(np.array(s["quad_world_mm"])[:, :2], np.array(b["quad_world_mm"])[:, :2]) > 1e-8
             for s in sg
             for b in bg
         ):
