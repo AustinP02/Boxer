@@ -10,31 +10,27 @@
   "travel_z_mm": null,
   "colors": {
     "blue": {
-      "hex": "#0000FF",
-      "detector": "boxer-blue"
+      "hex": "#0000FF"
     },
     "green": {
-      "hex": "#00FF00",
-      "detector": "boxer-green"
+      "hex": "#00FF00"
     },
     "yellow": {
-      "hex": "#FFFF00",
-      "detector": "boxer-yellow"
+      "hex": "#FFFF00"
     },
     "red": {
-      "hex": "#FF0000",
-      "detector": "boxer-red"
+      "hex": "#FF0000"
     }
   },
   "perception": {
-    "hue_tolerance": 0.055,
     "min_saturation": 0.3,
     "min_value": 0.18,
     "voxel_mm": 2,
     "cluster_radius_mm": 5,
     "min_points": 30,
     "min_object_mm": 8,
-    "max_object_mm": 130
+    "max_object_mm": 130,
+    "min_color_pixels": 60
   },
   "grasp": {
     "max_width_mm": 70,
@@ -45,7 +41,8 @@
     "center_support_mm": 6,
     "neighbor_clearance_mm": 15,
     "payload_below_tcp_mm": 80,
-    "yaw_offset_deg": 0
+    "yaw_offset_deg": 0,
+    "drop_center_margin_mm": 3
   },
   "motion_limits": {
     "timeout_s": 60,
@@ -81,5 +78,25 @@
       "drop_pose": null
     }
   },
-  "state_file": "../state/bin-state.json"
+  "state_file": "../state/bin-state.json",
+  "layout_detection": {
+    "source": {
+      "width": 108,
+      "length": 138,
+      "height": 60,
+      "wall_thickness": 2,
+      "height_reference": "tabletop",
+      "width_length_reference": "unconfirmed",
+      "bottom_thickness": null
+    },
+    "destination": {
+      "width": 52,
+      "length": 138,
+      "height": 35,
+      "wall_thickness": null,
+      "height_reference": "tabletop",
+      "width_length_reference": "unconfirmed",
+      "bottom_thickness": null
+    }
+  }
 }

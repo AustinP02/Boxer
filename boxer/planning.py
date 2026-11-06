@@ -12,6 +12,8 @@ from viam.proto.common import (
     WorldState,
 )
 
+from .geometry import local_points, rotation_xy
+
 
 def pose_dict(pose):
     return {k: getattr(pose, k) for k in ("x", "y", "z", "o_x", "o_y", "o_z", "theta")}
@@ -41,6 +43,12 @@ def container_geometry(label, box):
             s[axis] = t
             s[1 - axis] += 2 * t
             geoms.append(make_box(f"{label}-wall-{axis}-{side}", c, s))
+    if box.get("yaw_deg", 0):
+        for geom in geoms:
+            p = np.array([geom.center.x, geom.center.y])
+            rotated = (p - center[:2]) @ rotation_xy(box).T + center[:2]
+            geom.center.x, geom.center.y = rotated
+            geom.center.theta = box["yaw_deg"]
     return geoms
 
 
@@ -103,9 +111,10 @@ def bin_fits(candidate, settings, bin_id):
     c = d["bins"][bin_id]
     # No in-bin packing: reject an item whose conservative envelope won't fit the opening.
     side = payload_side_mm(candidate, settings)
+    local = local_points([c["drop_pose"]["x"], c["drop_pose"]["y"], c["drop_pose"]["z"]], c["container"])
     return all(
-        c["container"]["min_mm"][i] + side / 2 < c["drop_pose"][axis] < c["container"]["max_mm"][i] - side / 2
-        for i, axis in enumerate(("x", "y"))
+        c["container"]["min_mm"][i] + side / 2 < local[i] < c["container"]["max_mm"][i] - side / 2
+        for i in (0, 1)
     )
 
 

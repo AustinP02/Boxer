@@ -8,6 +8,7 @@ from boxer.perception import (
     CloudImage,
     cluster_points,
     color_mask,
+    detect_colors,
     extract_candidates,
     grasp_candidate,
     project_cloud,
@@ -67,8 +68,17 @@ def test_four_color_masks_and_red_hue_wrap(settings):
         np.uint8,
     )
     for color, indexes in [("red", [0, 1]), ("green", [2]), ("blue", [3]), ("yellow", [4])]:
-        mask = color_mask(rgb, settings.data["colors"][color]["hex"], settings.data["perception"])
+        mask = color_mask(rgb, color, settings.data["perception"])
         assert np.flatnonzero(mask).tolist() == indexes
+
+
+def test_local_opencv_detects_camera_shades_without_any_viam_vision_services(settings):
+    # Broad color bands include the cyan-blue and shaded green of the real camera capture.
+    rgb = np.full((100, 240, 3), 255, np.uint8)
+    for x, color in zip((5, 65, 125, 185), ((0, 70, 100), (0, 100, 70), (180, 160, 0), (180, 0, 0))):
+        rgb[20:80, x : x + 45] = color
+    boxes = detect_colors(rgb, settings)
+    assert {c: len(b) for c, b in boxes.items()} == {"blue": 1, "green": 1, "yellow": 1, "red": 1}
 
 
 def test_separate_same_color_items_split(candidate):

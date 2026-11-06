@@ -1,10 +1,10 @@
 """Local workcell measurements. All Cartesian values are millimeters in world."""
 
-import colorsys
 import json
 import math
 from pathlib import Path
 
+from .geometry import footprints_overlap, local_points
 from .storage import atomic_json
 
 COLORS = ("blue", "green", "yellow", "red")
@@ -45,6 +45,7 @@ def check_container(container, name):
     wall = container.get("wall_mm")
     if not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall <= 0:
         raise SetupError(f"{name}.wall_mm must be positive")
+    vector([container.get("yaw_deg", 0)], f"{name}.yaw_deg", 1)
 
 
 class Settings:
@@ -59,8 +60,6 @@ class Settings:
         if set(data.get("colors", {})) != set(COLORS):
             raise SetupError("Exactly blue, green, yellow and red must be configured")
         for color, cfg in data["colors"].items():
-            if not cfg.get("detector"):
-                raise SetupError(f"Missing detector for {color}")
             try:
                 h = cfg["hex"]
                 if len(h) != 7 or h[0] != "#":
@@ -69,21 +68,10 @@ class Settings:
             except (KeyError, TypeError, ValueError):
                 raise SetupError(f"Invalid {color} hex") from None
         p = data.get("perception", {})
-        for key in ("hue_tolerance", "min_saturation", "min_value"):
+        for key in ("min_saturation", "min_value"):
             v = p.get(key)
             if not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 < v < 1:
                 raise SetupError(f"perception.{key} must be between zero and one")
-        hues = []
-        for color, cfg in data["colors"].items():
-            rgb = [int(cfg["hex"][i : i + 2], 16) / 255 for i in (1, 3, 5)]
-            hue, sat, val = colorsys.rgb_to_hsv(*rgb)
-            if sat < p["min_saturation"] or val < p["min_value"]:
-                raise SetupError(f"{color} target hex is too gray or dark for its configured cutoffs")
-            hues.append((color, hue * 360))
-        for i, (color, hue) in enumerate(hues):
-            for other, h in hues[i + 1 :]:
-                if abs((hue - h + 180) % 360 - 180) <= p["hue_tolerance"] * 360:
-                    raise SetupError(f"Color hue windows overlap: {color}, {other}")
         for group, keys in {
             "perception": ("voxel_mm", "cluster_radius_mm", "min_points", "min_object_mm", "max_object_mm"),
             "grasp": (
@@ -106,6 +94,13 @@ class Settings:
             raise SetupError("min_points must be an integer >= 5")
         if p["min_object_mm"] >= p["max_object_mm"]:
             raise SetupError("min_object_mm must be below max_object_mm")
+        pixel_count = p.get("min_color_pixels", 60)
+        if isinstance(pixel_count, bool) or not isinstance(pixel_count, int) or pixel_count < 1:
+            raise SetupError("min_color_pixels must be a positive integer")
+        margin = data["grasp"].get("drop_center_margin_mm", 3)
+        vector([margin], "drop_center_margin_mm", 1)
+        if margin <= 0:
+            raise SetupError("drop_center_margin_mm must be positive")
         if set(data.get("sources", {})) != set(SOURCE_IDS):
             raise SetupError("Configure source-1 and source-2")
         if set(data.get("bins", {})) != set(BIN_IDS):
@@ -140,9 +135,11 @@ class Settings:
             if c.get("container") is not None:
                 check_container(c["container"], f"{bin_id} container")
 
-    def validate_workcell(self):
+    def validate_workcell(self, require_review=True):
         d = self.data
-        if d.get("calibration_reviewed") is not True or d.get("camera_frame_verified") is not True:
+        if require_review and (
+            d.get("calibration_reviewed") is not True or d.get("camera_frame_verified") is not True
+        ):
             raise SetupError(
                 "Verify camera/world alignment and workcell measurements, then set both review flags true"
             )
@@ -161,11 +158,10 @@ class Settings:
             check_container(cfg.get("container"), f"{bin_id} container")
             check_pose(cfg.get("drop_pose"), f"{bin_id} drop_pose")
             box, pose = cfg["container"], cfg["drop_pose"]
-            margin = d["grasp"]["wall_clearance_mm"]
-            if not all(
-                box["min_mm"][i] + margin < pose[axis] < box["max_mm"][i] - margin
-                for i, axis in enumerate(("x", "y"))
-            ):
+            # Drop poses stay above the rim; object fit is checked separately before picking.
+            margin = d["grasp"].get("drop_center_margin_mm", 3)
+            local = local_points([pose["x"], pose["y"], pose["z"]], box)
+            if not all(box["min_mm"][i] + margin < local[i] < box["max_mm"][i] - margin for i in (0, 1)):
                 raise SetupError(f"{bin_id} drop pose must be well inside its bin opening")
             if not (
                 box["max_mm"][2] + d["motion_limits"]["clearance_mm"] + d["grasp"]["payload_below_tcp_mm"]
@@ -183,30 +179,5 @@ class Settings:
                 raise SetupError(f"travel_z_mm must clear {name} rim")
         for i, (name, box) in enumerate(containers):
             for other, b in containers[i + 1 :]:
-                if all(
-                    box["min_mm"][j] - box["wall_mm"] < b["max_mm"][j] + b["wall_mm"]
-                    and b["min_mm"][j] - b["wall_mm"] < box["max_mm"][j] + box["wall_mm"]
-                    for j in (0, 1)
-                ):
+                if footprints_overlap(box, b):
                     raise SetupError(f"Container footprints overlap: {name}, {other}")
-
-
-def detector_blocks(settings):
-    p = settings.data["perception"]
-    return [
-        {
-            "name": c["detector"],
-            "api": "rdk:service:vision",
-            "model": "rdk:builtin:color_detector",
-            "attributes": {
-                "detect_color": c["hex"],
-                "label": color,
-                "camera_name": settings.data["camera"],
-                "hue_tolerance_pct": p["hue_tolerance"],
-                "segment_size_px": 60,
-                "saturation_cutoff_pct": p["min_saturation"],
-                "value_cutoff_pct": p["min_value"],
-            },
-        }
-        for color, c in settings.data["colors"].items()
-    ]

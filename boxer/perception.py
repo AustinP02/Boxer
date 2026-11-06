@@ -1,12 +1,32 @@
 """Shape-independent, colored 3D clustering and conservative top-down grasp estimates."""
 
-import colorsys
 import math
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 from scipy.spatial import cKDTree
+
+from .geometry import inside_container, local_points
+
+# OpenCV floating-point HSV uses hue in degrees. Classification runs here in Python.
+# Orange/purple and low-saturation pixels remain unknown instead of forcing a sorting color.
+COLOR_HUE_RANGES = {
+    "red": ((0, 25), (335, 360)),
+    "yellow": ((40, 70),),
+    "green": ((70, 170),),
+    "blue": ((170, 270),),
+}
+
+
+@dataclass
+class ColorDetection:
+    x_min: int
+    y_min: int
+    x_max: int
+    y_max: int
+    class_name: str
+    confidence: float = 1.0
 
 
 @dataclass
@@ -73,19 +93,33 @@ def project_cloud(xyz, rgb, intrinsics):
     return CloudImage(image, xyz, uv, rgb)
 
 
-def color_mask(rgb, hex_color, params):
+def color_mask(rgb, color, params):
     if len(rgb) == 0:
         return np.zeros(0, dtype=bool)
     hsv = cv2.cvtColor(rgb.reshape(1, -1, 3).astype(np.float32) / 255, cv2.COLOR_RGB2HSV)[0]
-    target = tuple(int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5))
-    hue = colorsys.rgb_to_hsv(*target)[0] * 360
-    distance = np.abs((hsv[:, 0] - hue + 180) % 360 - 180)
-    # RDK defines tolerance as total hue-window fraction: +/- pct * 180 degrees.
-    return (
-        (distance <= params["hue_tolerance"] * 180)
-        & (hsv[:, 1] >= params["min_saturation"])
-        & (hsv[:, 2] >= params["min_value"])
-    )
+    hue_mask = np.zeros(len(rgb), bool)
+    for lower, upper in COLOR_HUE_RANGES[color]:
+        hue_mask |= (hsv[:, 0] >= lower) & (hsv[:, 0] < upper)
+    return hue_mask & (hsv[:, 1] >= params["min_saturation"]) & (hsv[:, 2] >= params["min_value"])
+
+
+def detect_colors(rgb, settings):
+    """Local OpenCV connected-color regions; no Viam vision service or ML inference."""
+    height, width = rgb.shape[:2]
+    params = settings.data["perception"]
+    result = {}
+    for color in COLOR_HUE_RANGES:
+        mask = color_mask(rgb.reshape(-1, 3), color, params).reshape(height, width).astype(np.uint8)
+        # Close small holes in the rendered depth image; 3D clustering still separates objects.
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        boxes = []
+        for label in range(1, count):
+            x, y, w, h, area = stats[label]
+            if area >= params.get("min_color_pixels", 60):
+                boxes.append(ColorDetection(int(x), int(y), int(x + w - 1), int(y + h - 1), color))
+        result[color] = boxes
+    return result
 
 
 def cluster_points(points, voxel_mm, radius_mm, min_points):
@@ -147,9 +181,10 @@ def grasp_candidate(color, points, settings, source_id="source-1"):
     source = d["sources"][source_id].get("container")
     if source is None:
         return None, "source container is not measured"
+    local_center = local_points([center[0], center[1], top], source)
     if any(
         not source["min_mm"][i] + g["wall_clearance_mm"]
-        < center[i]
+        < local_center[i]
         < source["max_mm"][i] - g["wall_clearance_mm"]
         for i in (0, 1)
     ):
@@ -187,9 +222,8 @@ def _extract_source(cloud, world_mm, detections, settings, source_id):
     source = d["sources"][source_id]["container"]
     report, candidates, objects = [], [], []
     claimed = np.zeros(len(world_mm), bool)
-    lo, hi = np.array(source["min_mm"]), np.array(source["max_mm"])
-    roi = ((world_mm > lo) & (world_mm < hi)).all(axis=1)
-    for color, cfg in d["colors"].items():
+    roi = inside_container(world_mm, source)
+    for color in d["colors"]:
         in_box = np.zeros(len(world_mm), bool)
         for box in detections[color]:
             in_box |= (
@@ -198,7 +232,7 @@ def _extract_source(cloud, world_mm, detections, settings, source_id):
                 & (cloud.uv[:, 1] >= box.y_min)
                 & (cloud.uv[:, 1] <= box.y_max)
             )
-        mask = roi & in_box & color_mask(cloud.colors, cfg["hex"], p)
+        mask = roi & in_box & color_mask(cloud.colors, color, p)
         # Only claim retained clusters: small/sparse colored material remains unknown occupancy.
         for points in cluster_points(world_mm[mask], p["voxel_mm"], p["cluster_radius_mm"], p["min_points"]):
             objects.append((color, points))

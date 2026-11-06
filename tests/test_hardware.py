@@ -6,7 +6,6 @@ import pytest
 from viam.proto.common import Pose, PoseInFrame
 from viam.proto.component.arm import JointPositions
 from viam.proto.component.camera import GetPropertiesResponse, IntrinsicParameters
-from viam.proto.service.vision import Detection
 
 from boxer.hardware import Hardware
 from boxer.planning import world_state
@@ -54,10 +53,8 @@ async def test_failed_motion_result_is_an_error(settings):
         await hw.move(settings.data["sources"]["source-1"]["observe_pose"], world_state(settings))
 
 
-async def test_full_rgbd_observation_uses_jpeg_sdk_contract_and_world_transform(settings):
-    """Regression for SDK's JPEG-only GetDetections wire request; no actuating API exists here."""
-    import cv2
-    from viam.media.video import CameraMimeType
+async def test_full_rgbd_observation_uses_local_opencv_and_world_transform(settings):
+    """Color detection and 3D filtering are local; no Viam vision client is required."""
 
     hw = Hardware.__new__(Hardware)
     hw.settings = settings
@@ -91,16 +88,6 @@ async def test_full_rgbd_observation_uses_jpeg_sdk_contract_and_world_transform(
 
     hw.robot = SimpleNamespace(get_operations=AsyncMock(return_value=[]), transform_pose=transform)
 
-    def detector(color):
-        async def detect(image, *, timeout):
-            assert image.mime_type == CameraMimeType.JPEG and image.data[:2] == b"\xff\xd8"
-            decoded = cv2.imdecode(np.frombuffer(image.data, np.uint8), cv2.IMREAD_COLOR)
-            assert decoded.shape == (100, 100, 3)
-            return [Detection(x_min=0, y_min=0, x_max=99, y_max=99, class_name=color, confidence=1)]
-
-        return SimpleNamespace(get_detections=detect)
-
-    hw.detectors = {color: detector(color) for color in settings.data["colors"]}
     observation = await hw.observe()
     assert len(observation.candidates) == 1
     c = observation.candidates[0]

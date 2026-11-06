@@ -34,15 +34,16 @@ Blue might then claim bin-3 and green bin-4. The saved assignments persist acros
 
 ## Viam integration
 
-Four services are already installed: `boxer-blue`, `boxer-green`, `boxer-yellow`, `boxer-red`,
-using `rdk:builtin:color_detector`. `builtin` motion is supplied by Viam. Shape-finder and
-TensorFlow services are not dependencies of this sorter.
+Color detection runs **locally in Python using OpenCV and NumPy**. The four hue bands live
+in `COLOR_HUE_RANGES` in `boxer/perception.py`; saturation, brightness and minimum region size
+are tuning parameters. No Viam color-detector block, ML model, or `VisionClient` is used.
+Existing unrelated robot services are not dependencies. Viam supplies camera data, frame
+transforms, motion planning, and arm/gripper control.
 
-The Camera API supplies a registered colored PCD. Its XYZ values are converted from meters
-into millimeters, and the actual camera intrinsics project it into an image. All four Viam
-vision services receive that same capture through `GetDetections` (JPEG for SDK 0.85.2's wire
-contract). The original point colors then filter each detection's depth points, and nearby
-points are grouped into objects independently within each source container.
+The Camera API supplies a registered colored PCD. XYZ is converted from meters into
+millimeters. The actual camera intrinsics project that capture into an RGB image, where
+OpenCV finds connected color regions. The same capture's original point colors and depth
+then produce separate 3D objects within each source container.
 
 Viam frame transforms account for the moving wrist camera. Planned motions target the
 **gripper TCP**, with both source containers, all four output containers, observed non-target
@@ -73,7 +74,71 @@ Preview writes `captures/latest.png` and `latest.json`. `--frames 100` repeatedl
 requires a stationary arm and calculates source-specific 3D candidates for whichever calibrated
 sources are visible from the current view. Neither preview command moves hardware.
 
-## Calibrate the six-container layout
+## Automatic container localization
+
+The preferred setup path detects containers from the camera rather than typing their robot
+coordinates. It uses **OpenCV rim/line detection in Python**, known container dimensions,
+a fitted horizontal tabletop depth plane, and Viam camera-to-world transforms. It does not
+use a trained container ML model or trust depth readings from transparent plastic walls.
+
+Confirmed tabletop-to-rim heights are **60 mm for sources** and **35 mm for destinations**.
+Reported widths/lengths are 108 x 138 mm for sources and 52 x 138 mm for outputs. They are
+stored under `layout_detection`; width/length inside-versus-outside reference is still
+unconfirmed, as are destination wall thickness and both types' bottom thickness.
+
+Requirements for this initial detector:
+
+- All six containers are stationary and fully visible from the current wrist-camera view.
+- They rest on the **same tabletop**, not a mixture of table and a raised board/tray.
+- They follow the reference arrangement: a parallel group of two large sources beside a
+  parallel group of four narrow outputs, with small gaps between containers.
+- Rim edges must be distinguishable. Ambiguous, cropped, obscured or differently arranged
+  layouts are rejected rather than automatically authorizing motion.
+
+The detector fits the table plane, projects RGB rim lines onto planes at the known heights,
+checks measured rectangle sizes/edge support, and matches the full two-plus-four arrangement.
+It labels the sources and outputs in image order along their group; check the IDs on the
+overlay for this camera view. This names an initial unassigned layout and must not relabel
+bins that already contain assigned colors.
+
+```powershell
+# Read-only camera capture: does not move or deploy anything to the robot.
+.\.venv\Scripts\python -m boxer detect-layout
+```
+
+Review `captures/layout/overlay.png` and `proposal.json`. `complete: false` means the full
+arrangement or stationary-capture checks failed. Even `complete: true` is a **proposal**, not
+permission for physical motion. The software checks scene change between RGB captures and
+arm joint stability around the depth capture.
+
+Before saving operating coordinates, confirm these physical measurements in
+`layout_detection.source` and `.destination` in local settings:
+
+- `width_length_reference`: `inside` or `outside`.
+- `wall_thickness`: actual wall thickness in millimeters.
+- `bottom_thickness`: bottom material thickness in millimeters.
+- `height_reference`: `tabletop` (the supplied heights are outside overall heights).
+
+Capture again after updating these measurements, then:
+
+```powershell
+.\.venv\Scripts\python -m boxer save-layout
+```
+
+This computes both source interiors, four output interiors, source observation poses from
+the actual capture pose, output release centers and travel height. It supports detected
+container yaw and models the walls accordingly. It backs up local settings and leaves
+`camera_frame_verified` and `calibration_reviewed` **false** for physical verification.
+It refuses incomplete proposals, missing dimensions, overlapping container models, an
+observation pose below the required travel height, or conflicting saved bin ownership.
+No robot motion or remote robot configuration write is performed.
+
+This removes manual entry of container XYZ coordinates. A physical check of the camera/world
+alignment, actual gripper TCP and the proposed outline/clearance remains necessary before
+setting the review flags and commissioning the first grasp. If the containers move, capture
+and review their new layout; the sorter does not currently relocate owned bins during a run.
+
+## Manual fallback calibration
 
 Settings use **schema 2**. The earlier local one-source settings were backed up as
 `config/local.v1.json`; the working `config/local.json` is migrated but remains uncalibrated.
@@ -92,7 +157,8 @@ physical fingertips before measuring from it, and verify wrist-camera/world alig
 a known object's measured position. The RealSense module's registered PCD already uses the
 color camera frame; do not apply another color/depth baseline offset.
 
-For **each of the six containers**, measure the axis-aligned interior:
+For manual fallback, record each container interior. Axis-aligned boxes use `yaw_deg: 0`;
+rotated boxes additionally specify their local-XY yaw around the world Z axis:
 
 ```json
 {
@@ -134,10 +200,11 @@ Set `travel_z_mm` to clear every rim plus that payload extent and `motion_limits
 both observation TCP poses must be at or above travel height. Reachability still requires
 Viam planning and physical commissioning.
 
-Tune the four detector hues/cutoffs under actual lighting and keep them identical to local
-`colors.*.hex` and `perception` settings. `boxer blocks` prints matching service blocks, which
-can also be applied through MCP. Review insertion depth, jaw width, finger margin and the
-gripper's closing-axis `grasp.yaw_offset_deg`. Color windows must not overlap.
+Tune `COLOR_HUE_RANGES` in the Python perception module and the local saturation/value
+cutoffs under actual lighting, checking `preview --image-only`. There are no Viam color
+service blocks to configure. Review insertion depth, jaw width, finger margin and the
+gripper closing-axis `grasp.yaw_offset_deg`. The smaller `drop_center_margin_mm` applies to
+release centers above the rims; source finger/wall clearance remains independently enforced.
 
 After verifying the real measurements, camera frame and grasps, set `camera_frame_verified`
 and `calibration_reviewed` true in local settings. Teaching again clears the latter flag.
@@ -224,12 +291,12 @@ commit `d50e1e6`. `live_feed.py` runs read-only previews.
 .\.venv\Scripts\python -m ruff check boxer tests
 ```
 
-Tests cover RGBD decoding/projection, hue masks, source isolation, grasps, frame math, payload
+Tests cover local OpenCV colors, RGBD decoding/projection, table/rim-height geometry, six-container
+layout detection, rotated interiors, automatic coordinate generation, source isolation, grasps, frame math, payload
 geometry, both-source selection, randomized eligible pools, all color routes, persistent
 ownership, restart recovery, atomic-write failure, no-motion dry runs and failure stops.
 
 References: [Viam Camera API](https://docs.viam.com/reference/apis/components/camera/),
-[color detectors](https://docs.viam.com/reference/services/vision/color_detector/),
 [RealSense module](https://github.com/viam-modules/viam-camera-realsense),
 [frame system](https://docs.viam.com/motion-planning/reference/frame-system-api/),
 [picking objects](https://docs.viam.com/motion-planning/move-an-arm/pick-an-object/).

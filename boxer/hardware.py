@@ -13,15 +13,13 @@ from dotenv import load_dotenv
 from viam.components.arm import Arm
 from viam.components.camera import Camera
 from viam.components.gripper import Gripper
-from viam.media.video import CameraMimeType, ViamImage
 from viam.proto.common import Pose, PoseInFrame
 from viam.proto.service.motion import CollisionSpecification, Constraints, LinearConstraint
 from viam.robot.client import RobotClient
 from viam.services.motion import MotionClient
-from viam.services.vision import VisionClient
 
 from .pcd import decode_pcd
-from .perception import extract_candidates, project_cloud
+from .perception import detect_colors, extract_candidates, project_cloud
 from .planning import pose_dict
 from .settings import SetupError
 
@@ -71,8 +69,6 @@ class Hardware:
         self.cam = Camera.from_robot(robot, d["camera"])
         self.gripper = Gripper.from_robot(robot, d["gripper"])
         self.motion = MotionClient.from_robot(robot, d["motion"])
-        # Build detector clients lazily; inspect/teach work before detector blocks are installed.
-        self.detectors = None
 
     async def color_preview(self):
         """Color-only monitoring remains useful while another controller moves the arm."""
@@ -83,19 +79,13 @@ class Hardware:
         bgr = cv2.imdecode(np.frombuffer(image.data, np.uint8), cv2.IMREAD_COLOR)
         if bgr is None:
             raise RuntimeError("Could not decode camera color image")
-        if self.detectors is None:
-            self.detectors = {
-                c: VisionClient.from_robot(self.robot, cfg["detector"])
-                for c, cfg in self.settings.data["colors"].items()
-            }
-        results = await asyncio.gather(
-            *(v.get_detections(image, timeout=30) for v in self.detectors.values())
-        )
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        detections = detect_colors(rgb, self.settings)
         return Observation(
             [],
             [{"reason": "Color-only monitoring; no 3D pick coordinates computed"}],
             [],
-            dict(zip(self.detectors, results)),
+            detections,
             cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
             time.monotonic(),
             np.array([]),
@@ -116,6 +106,54 @@ class Hardware:
         result = await self.robot.get_pose(self.settings.data["gripper"], "world", timeout=15)
         return pose_dict(result.pose)
 
+    async def layout_snapshot(self):
+        """Stationary RGB plus registered scene depth for tabletop/rim-height localization."""
+        await self.assert_idle()
+        before = await self.joints()
+        images, _ = await self.cam.get_images(filter_source_names=["color"], timeout=15)
+        image = next((i for i in images if i.name == "color"), None)
+        if image is None:
+            raise RuntimeError("Camera did not return its color stream")
+        bgr = cv2.imdecode(np.frombuffer(image.data, np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise RuntimeError("Could not decode layout image")
+        props = await self.cam.get_properties(timeout=15)
+        if not props.supports_pcd or any(abs(v) > 1e-8 for v in props.distortion_parameters.parameters):
+            raise SetupError("Layout detection requires registered point clouds and zero distortion")
+        rotation, origin = await self.camera_matrix(
+            props.default_reference_frame or self.settings.data["camera"]
+        )
+        xyz, _ = decode_pcd((await self.cam.get_point_cloud(timeout=30))[0])
+        final_images, _ = await self.cam.get_images(filter_source_names=["color"], timeout=15)
+        final_image = next((i for i in final_images if i.name == "color"), None)
+        final_bgr = (
+            cv2.imdecode(np.frombuffer(final_image.data, np.uint8), cv2.IMREAD_COLOR)
+            if final_image is not None
+            else None
+        )
+        if final_bgr is None or final_bgr.shape != bgr.shape:
+            raise RuntimeError("Could not verify that the layout scene remained stationary")
+        difference = cv2.absdiff(
+            cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), cv2.cvtColor(final_bgr, cv2.COLOR_BGR2GRAY)
+        )
+        if np.mean(difference > 30) > 0.02:
+            raise RuntimeError(
+                "Scene changed during layout capture; keep containers/items stationary and retry"
+            )
+        after = await self.joints()
+        await self.assert_idle()
+        if before.shape != after.shape or np.max(np.abs(before - after)) > 0.15:
+            raise RuntimeError("Arm moved during layout capture; discard this snapshot")
+        return {
+            "rgb": cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
+            "world_mm": xyz @ rotation.T + origin,
+            "rotation": rotation,
+            "origin": origin,
+            "intrinsics": props.intrinsic_parameters,
+            "camera_pose": await self.current_pose(),
+            "scene_consistent": True,
+        }
+
     async def assert_ready(self):
         d = self.settings.data
         required = {
@@ -124,7 +162,6 @@ class Hardware:
             ("component", "gripper", d["gripper"]),
             ("service", "motion", d["motion"]),
         }
-        required |= {("service", "vision", c["detector"]) for c in d["colors"].values()}
         status = await self.robot.get_machine_status()
         ready = {(r.name.type, r.name.subtype, r.name.name) for r in status.resources if r.state == 3}
         missing = required - ready
@@ -179,22 +216,7 @@ class Hardware:
             props.default_reference_frame or self.settings.data["camera"]
         )
         world = cloud.camera_mm @ rotation.T + origin
-        if self.detectors is None:
-            self.detectors = {
-                c: VisionClient.from_robot(self.robot, cfg["detector"])
-                for c, cfg in self.settings.data["colors"].items()
-            }
-        # SDK 0.85.2 GetDetections hardcodes image/jpeg on the wire, even for PNG ViamImages.
-        ok, encoded = cv2.imencode(
-            ".jpg", cv2.cvtColor(cloud.rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 100]
-        )
-        if not ok:
-            raise RuntimeError("Could not encode point cloud color projection")
-        image = ViamImage(encoded.tobytes(), CameraMimeType.JPEG)
-        results = await asyncio.gather(
-            *(v.get_detections(image, timeout=30) for v in self.detectors.values())
-        )
-        detections = dict(zip(self.detectors, results))
+        detections = detect_colors(cloud.rgb, self.settings)
         after = await self.joints()
         await self.assert_idle()
         if before.shape != after.shape or np.max(np.abs(before - after)) > 0.15:

@@ -8,12 +8,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import cv2
+import numpy as np
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 
 from .bin_state import BinState
 from .controller import Sorter
 from .hardware import connection
-from .settings import BIN_IDS, SOURCE_IDS, Settings, SetupError, detector_blocks
+from .layout import draw_layout, layout_proposal, settings_from_proposal
+from .settings import BIN_IDS, SOURCE_IDS, Settings, SetupError
+from .storage import atomic_json
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config/local.json"
@@ -44,8 +47,13 @@ def build_parser():
     commands = p.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="Create local settings without connecting")
     commands.add_parser("validate", help="Validate completed workcell measurements without connecting")
-    commands.add_parser("blocks", help="Print required Viam detector blocks without connecting")
     commands.add_parser("inspect", help="Read resources, camera properties and machine health")
+    layout = commands.add_parser("detect-layout", help="Read-only automatic container rim/position proposal")
+    layout.add_argument("--output", type=Path, default=ROOT / "captures/layout")
+    apply_layout = commands.add_parser(
+        "save-layout", help="Save detected coordinates/poses with motion review still disabled"
+    )
+    apply_layout.add_argument("--proposal", type=Path, default=ROOT / "captures/layout/proposal.json")
     preview = commands.add_parser("preview", help="Read-only detections, 3D candidates and PNG captures")
     preview.add_argument("--frames", type=int, default=1)
     preview.add_argument(
@@ -106,6 +114,52 @@ async def connected_command(args, settings, state=None):
     async with connection(settings) as hw:
         if args.command == "inspect":
             print(json.dumps(await hw.inspect(), indent=2))
+        elif args.command == "detect-layout":
+            capture = await hw.layout_snapshot()
+            args.output.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(args.output / "color.jpg"), cv2.cvtColor(capture["rgb"], cv2.COLOR_RGB2BGR))
+            np.savez_compressed(
+                args.output / "capture.npz",
+                rgb=capture["rgb"],
+                points=capture["world_mm"],
+                rotation=capture["rotation"],
+                origin=capture["origin"],
+            )
+            from google.protobuf.json_format import MessageToDict
+
+            atomic_json(
+                args.output / "camera.json",
+                {
+                    "intrinsics": MessageToDict(capture["intrinsics"], preserving_proto_field_name=True),
+                    "camera_pose": capture["camera_pose"],
+                    "scene_consistent": capture["scene_consistent"],
+                },
+            )
+            proposal = layout_proposal(
+                capture["rgb"],
+                capture["intrinsics"],
+                capture["rotation"],
+                capture["origin"],
+                capture["world_mm"],
+                settings.data.get("layout_detection", {}),
+                capture["camera_pose"],
+                scene_consistent=capture["scene_consistent"],
+            )
+            atomic_json(args.output / "proposal.json", proposal)
+            if not cv2.imwrite(str(args.output / "overlay.png"), draw_layout(capture["rgb"], proposal)):
+                raise RuntimeError("Could not write layout overlay")
+            print(
+                json.dumps(
+                    {
+                        "complete": proposal["complete"],
+                        "counts": proposal["counts"],
+                        "proposal": str(args.output / "proposal.json"),
+                        "overlay": str(args.output / "overlay.png"),
+                        "motion_enabled": False,
+                    },
+                    indent=2,
+                )
+            )
         elif args.command == "teach":
             await hw.assert_idle()
             pose = await hw.current_pose()
@@ -176,10 +230,25 @@ def main(argv=None):
         if args.command == "validate":
             settings.validate_workcell()
             print("Workcell settings valid. Physical calibration and motion still need bench verification.")
-        elif args.command == "blocks":
-            print(json.dumps({"services": detector_blocks(settings)}, indent=2))
         elif args.command == "bins":
             bin_command(args, settings)
+        elif args.command == "save-layout":
+            with controller_lock(settings.state_path):
+                if settings.state_path.exists():
+                    saved = json.loads(settings.state_path.read_text(encoding="utf-8"))
+                    if saved.get("pending") or any(
+                        b.get("color") is not None for b in saved.get("bins", {}).values()
+                    ):
+                        raise SetupError(
+                            "Existing bin ownership must be reconciled before saving a different layout"
+                        )
+                proposal = json.loads(args.proposal.read_text(encoding="utf-8"))
+                draft = settings_from_proposal(settings, proposal)
+                shutil.copy2(args.config, args.config.with_name(args.config.stem + ".before-layout.json"))
+                draft.save(args.config)
+                print(
+                    "Saved detected container positions and operating poses. Physical review remains required before motion."
+                )
         else:
             if args.command == "run":
                 settings.validate_workcell()
