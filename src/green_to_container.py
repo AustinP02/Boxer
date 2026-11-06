@@ -45,6 +45,8 @@ ALLOW_CLAWS_TABLE = Constraints(collision_specification=[CollisionSpecification(
     allows=[CollisionSpecification.AllowedFrameCollisions(frame1='gripper:claws', frame2='table:table')])])
 MAX_RAISE_MM = 24  # planner accepts gripper z >= ~32 (claws model reaches ~53 mm below tool point, table top -23)
 SPEED = 50.0  # was 5.0; raised in steps on request (10, 20, 50)
+MOVE_TIMEOUT_S = 90.0  # per linear move; scaled up by apply_speed so a slow run does not time out
+SCAN_MOVE_TIMEOUT_S = 60.0
 MAX_SHIFT_MM = 15
 MIN_DISC_MM = 18  # block is ~35x39 mm; needs a clear disc ~20 mm radius
 IGNORED = ('no matching-color or verified-empty destination',)
@@ -212,6 +214,23 @@ class DirectFallbackMotion:
             raise
 
 
+def apply_speed(speed):
+    """--speed N: run everything at arm speed N (normal is 50; 5 is super slow and quiet): the carrying speed,
+    the long-block descent, the hello wave (scaled down) and every move timeout (scaled up so the slower
+    moves are not cut off). None leaves the normal speeds."""
+    global SPEED, LONG_PICK_SPEED, WAVE_SPEED, MOVE_TIMEOUT_S, SCAN_MOVE_TIMEOUT_S
+    if speed is None:
+        return
+    if not 0 < speed <= 200:
+        raise ValueError('--speed must be between 0 and 200 (normal 50, super slow 5)')
+    factor = max(1.0, 50.0 / speed)
+    SPEED = float(speed)
+    LONG_PICK_SPEED = min(LONG_PICK_SPEED, SPEED)
+    WAVE_SPEED = max(20.0, WAVE_SPEED / factor)
+    MOVE_TIMEOUT_S = 90.0 * factor
+    SCAN_MOVE_TIMEOUT_S = 60.0 * factor
+
+
 def load_config():
     config = json.loads(sorter.CONFIG.read_text())
     return config
@@ -257,9 +276,9 @@ async def run(args, config):
                 here = (await motion.get_pose('gripper', 'world', timeout=15)).pose
                 await DirectFallbackMotion(motion, arm).move(component_name='gripper',
                     destination=PoseInFrame(reference_frame='world', pose=sorter.clone_pose(here, z=config['transit_z_mm'])),
-                    world_state=motion_world_state(world), extra={'motion_profile': 'linear'}, timeout=90)
+                    world_state=motion_world_state(world), extra={'motion_profile': 'linear'}, timeout=MOVE_TIMEOUT_S)
             if not await motion.move(component_name='arm', destination=PoseInFrame(reference_frame='world',
-                    pose=Pose(**config['scan_pose'])), world_state=motion_world_state(world), timeout=60):
+                    pose=Pose(**config['scan_pose'])), world_state=motion_world_state(world), timeout=SCAN_MOVE_TIMEOUT_S):
                 raise RuntimeError('Cannot reach scan pose')
             await asyncio.sleep(1)
         items, origin, basis, intrinsic = await sorter.snapshot(machine, camera, motion, config, detector,
@@ -276,7 +295,7 @@ async def run(args, config):
             print('Dropping into', dest['id'], sorter.pose_dict(drop), flush=True)
             async def go_to(pose):
                 if not await mover.move(component_name='gripper', destination=PoseInFrame(reference_frame='world', pose=pose),
-                        world_state=motion_world_state(world), extra={'motion_profile': 'linear'}, timeout=90):
+                        world_state=motion_world_state(world), extra={'motion_profile': 'linear'}, timeout=MOVE_TIMEOUT_S):
                     raise RuntimeError('Motion not confirmed')
             await go_to(sorter.clone_pose(drop, z=config['transit_z_mm']))
             await go_to(drop)
@@ -637,7 +656,7 @@ async def rescan_block(machine, camera, motion, world, config, color, near_xy):
 
 async def move_arm_to_scan(motion, world, config):
     if not await motion.move(component_name='arm', destination=PoseInFrame(reference_frame='world',
-            pose=Pose(**config['scan_pose'])), world_state=motion_world_state(world), timeout=60):
+            pose=Pose(**config['scan_pose'])), world_state=motion_world_state(world), timeout=SCAN_MOVE_TIMEOUT_S):
         raise RuntimeError('Cannot reach scan pose')
 
 
@@ -719,7 +738,7 @@ async def run_finish(args, config):
 
         async def move(pose):
             if not await mover.move(component_name='gripper', destination=PoseInFrame(reference_frame='world', pose=pose),
-                    world_state=state, extra={'motion_profile': 'linear'}, timeout=90):
+                    world_state=state, extra={'motion_profile': 'linear'}, timeout=MOVE_TIMEOUT_S):
                 raise RuntimeError('Motion not confirmed')
 
         orient = config['pick_orientation']
@@ -765,18 +784,18 @@ async def say_hello(arm, gripper):
     await arm.do_command({'set_speed': WAVE_SPEED}, timeout=15)
     print('Hello!', flush=True)
     try:
-        await arm.move_to_joint_positions(jp(WAVE_UP), timeout=60)
+        await arm.move_to_joint_positions(jp(WAVE_UP), timeout=SCAN_MOVE_TIMEOUT_S)
         for joint, amplitude in ((4, WAVE_WRIST_DEG), (0, WAVE_SIDE_DEG)):
             for _ in range(WAVE_COUNT):
                 # the gripper opens and closes on the side-to-side wave only (it is the slow part)
-                await asyncio.gather(arm.move_to_joint_positions(jp(shifted(joint, amplitude)), timeout=60),
+                await asyncio.gather(arm.move_to_joint_positions(jp(shifted(joint, amplitude)), timeout=SCAN_MOVE_TIMEOUT_S),
                                      gripper.open(timeout=15) if joint == 0 else asyncio.sleep(0))
-                await asyncio.gather(arm.move_to_joint_positions(jp(shifted(joint, -amplitude)), timeout=60),
+                await asyncio.gather(arm.move_to_joint_positions(jp(shifted(joint, -amplitude)), timeout=SCAN_MOVE_TIMEOUT_S),
                                      gripper.grab(timeout=15) if joint == 0 else asyncio.sleep(0))
-            await arm.move_to_joint_positions(jp(WAVE_UP), timeout=60)
+            await arm.move_to_joint_positions(jp(WAVE_UP), timeout=SCAN_MOVE_TIMEOUT_S)
         await gripper.open(timeout=15)
     finally:
-        await arm.move_to_joint_positions(jp(start), timeout=90)
+        await arm.move_to_joint_positions(jp(start), timeout=MOVE_TIMEOUT_S)
 
 
 async def run_hello(args, config):
@@ -807,6 +826,7 @@ class LiveView:
         self.status = ''
         self.task = None
         self._overlay_time = __import__('time').time()  # only show overlays written by this run
+        self._web_time = 0.0
 
     def say(self, text):
         self.status = text
@@ -827,6 +847,23 @@ class LiveView:
             except Exception:
                 pass
 
+    def _publish(self, frame):
+        """Write the annotated live frame for the web page (outputs/sort_runs/live.jpg, ~7 fps, atomic)."""
+        now = __import__('time').time()
+        if now - self._web_time < 0.14:
+            return
+        self._web_time = now
+        try:
+            folder = sorter.OUTPUT_DIR / 'sort_runs'
+            folder.mkdir(parents=True, exist_ok=True)
+            ok, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                tmp = folder / 'live.jpg.tmp'
+                tmp.write_bytes(jpg.tobytes())
+                os.replace(tmp, folder / 'live.jpg')
+        except Exception:
+            pass
+
     async def _loop(self):
         overlay_path = sorter.OUTPUT_DIR / 'sort_runs' / 'latest_overlay.jpg'
         while True:
@@ -840,6 +877,7 @@ class LiveView:
                                   (0, 200, 255), 2)
                     cv2.rectangle(frame, (0, 0), (w, 28), (20, 20, 20), -1)
                     cv2.putText(frame, self.status[:90], (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+                    self._publish(frame)
                     cv2.imshow('live feed (orange box = jaw check)', frame)
                 if overlay_path.exists() and overlay_path.stat().st_mtime > self._overlay_time:
                     self._overlay_time = overlay_path.stat().st_mtime
@@ -852,6 +890,44 @@ class LiveView:
             except Exception:
                 pass
             await asyncio.sleep(0.08)
+
+
+HALF_OPEN_POS = 425.0  # UFactory gripper travel is 0..850 (fully closed .. fully open); 425 is the midpoint
+HALF_OPEN_TOLERANCE = 15.0
+
+
+async def open_gripper(gripper, half_open=None, sleep=asyncio.sleep):
+    """Open the jaws before a grasp. half_open=None: fully open. A number: that jaw position (0..850) through the
+    driver's do_command {'set': pos} / {'get': True} (the other team's half_open_gripper.py). If the driver does
+    not report the position or never reaches it, fall back to a full open: never carry on with unknown jaws."""
+    if half_open is None:
+        await gripper.open(timeout=15)
+        return None
+    try:
+        if not isinstance((await gripper.do_command({'get': True}, timeout=15)).get('pos'), (int, float)):
+            raise RuntimeError('driver did not report a jaw position')
+        await gripper.do_command({'set': float(half_open)}, timeout=20)
+        position = None
+        for _ in range(15):
+            position = (await gripper.do_command({'get': True}, timeout=10)).get('pos')
+            if isinstance(position, (int, float)) and abs(position - half_open) <= HALF_OPEN_TOLERANCE:
+                print(f'  gripper half-open at {position:.0f} / 850', flush=True)
+                return position
+            await sleep(0.5)
+        raise RuntimeError(f'position {position} did not reach {half_open}')
+    except Exception as error:
+        print(f'  half-open failed ({str(error)[:80]}); opening fully instead', flush=True)
+        await gripper.open(timeout=15)
+        return None
+
+
+def half_open_for(block, requested):
+    """Jaw opening for this block's grasp: the requested half-open, except where the jaws could end up
+    across a rectangle's LONG side. Long blocks are turned to grip the short side only when their footprint
+    is known (aligned_orientation); without it the wrist angle is arbitrary, so open fully."""
+    if requested is not None and block.get('long', False) and not block.get('footprint'):
+        return None
+    return requested
 
 
 async def run_auto(args, config):
@@ -889,7 +965,7 @@ async def run_auto(args, config):
         async def move(pose):
             if not await mover.move(component_name='gripper',
                     destination=PoseInFrame(reference_frame='world', pose=pose),
-                    world_state=state, extra={'motion_profile': 'linear'}, timeout=90):
+                    world_state=state, extra={'motion_profile': 'linear'}, timeout=MOVE_TIMEOUT_S):
                 raise RuntimeError('Motion not confirmed')
 
         table_pose = (await motion.get_pose('table', 'world', timeout=15)).pose
@@ -963,7 +1039,7 @@ async def run_auto(args, config):
                     here = (await motion.get_pose('gripper', 'world', timeout=15)).pose
                     await move(sorter.clone_pose(here, z=max(here.z, transit)))
                     await move(sorter.clone_pose(approach, z=transit))
-                    await gripper.open(timeout=15)
+                    await open_gripper(gripper, half_open_for(block, args.half_open))  # --half-open: never across a rectangle's long side
                     await move(approach)
                     if args.recheck:
                         seen = await recheck_block(machine, camera, color, x, y, z, config['min_area_px'])
@@ -1069,9 +1145,15 @@ def main():
                         help='auto: skip the look-again at the approach pose')
     parser.add_argument('--use-cache', action='store_true',
                         help='auto: reuse cached layout/block positions (<15 min old) instead of scanning')
+    parser.add_argument('--speed', type=float, default=None, metavar='N',
+                        help='arm speed (normal 50). 5 = super slow and quiet, e.g. for presenting; slows the wave and scales move timeouts')
+    parser.add_argument('--half-open', nargs='?', type=float, const=HALF_OPEN_POS, default=None, metavar='POS',
+                        help=f'auto: open the jaws only to POS (0..850, default {HALF_OPEN_POS:.0f} = half) before each grasp; '
+                             'a long block with no known footprint (could be gripped across its long side) opens fully')
     parser.add_argument('--colors', nargs='+', default=['green'], choices=['red', 'yellow', 'blue', 'green'],
                         help='blocks to move, in order (default: green); --stage all scans then moves each')
     args = parser.parse_args()
+    apply_speed(args.speed)
     global COLOR
     if args.stage == 'hello':
         asyncio.run(run_hello(args, load_config()))

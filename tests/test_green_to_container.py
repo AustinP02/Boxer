@@ -23,6 +23,70 @@ class GreenTargetTests(unittest.TestCase):
                 g.green_target(items)
 
 
+class HalfOpenTests(unittest.TestCase):
+    def test_half_open_for_cubes_and_known_rectangles_only(self):
+        cube = dict(long=False, footprint=None)
+        rect_known = dict(long=True, footprint=[[0, 0], [70, 0], [70, 35], [0, 35]])
+        rect_unknown = dict(long=True, footprint=None)
+        self.assertEqual(g.half_open_for(cube, 425.0), 425.0)
+        self.assertEqual(g.half_open_for(rect_known, 425.0), 425.0)
+        self.assertIsNone(g.half_open_for(rect_unknown, 425.0))  # could be gripped across the long side
+        self.assertIsNone(g.half_open_for(cube, None))  # option off: full open as before
+
+
+class SpeedTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = (g.SPEED, g.LONG_PICK_SPEED, g.WAVE_SPEED, g.MOVE_TIMEOUT_S, g.SCAN_MOVE_TIMEOUT_S)
+
+    def tearDown(self):
+        g.SPEED, g.LONG_PICK_SPEED, g.WAVE_SPEED, g.MOVE_TIMEOUT_S, g.SCAN_MOVE_TIMEOUT_S = self.saved
+
+    def test_none_leaves_normal_speeds(self):
+        g.apply_speed(None)
+        self.assertEqual(self.saved, (g.SPEED, g.LONG_PICK_SPEED, g.WAVE_SPEED, g.MOVE_TIMEOUT_S, g.SCAN_MOVE_TIMEOUT_S))
+
+    def test_super_slow_slows_everything_and_stretches_timeouts(self):
+        g.apply_speed(5)
+        self.assertEqual(g.SPEED, 5.0)
+        self.assertLessEqual(g.LONG_PICK_SPEED, 5.0)
+        self.assertLess(g.WAVE_SPEED, 200.0)
+        self.assertAlmostEqual(g.MOVE_TIMEOUT_S, 900.0)
+        self.assertAlmostEqual(g.SCAN_MOVE_TIMEOUT_S, 600.0)
+
+    def test_faster_than_normal_does_not_shrink_timeouts(self):
+        g.apply_speed(80)
+        self.assertEqual(g.SPEED, 80.0)
+        self.assertEqual(g.MOVE_TIMEOUT_S, 90.0)
+
+    def test_bad_speed_refused(self):
+        for bad in (0, -5, 500):
+            with self.assertRaises(ValueError):
+                g.apply_speed(bad)
+
+
+class LivePublishTests(unittest.TestCase):
+    def test_live_frame_written_for_the_web_page(self):
+        import tempfile
+        import numpy as np
+        import cv2
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = g.sorter.OUTPUT_DIR
+            g.sorter.OUTPUT_DIR = Path(tmp)
+            try:
+                view = g.LiveView(camera=None, enabled=False)
+                view._publish(np.full((72, 128, 3), 200, np.uint8))
+                out = Path(tmp) / 'sort_runs' / 'live.jpg'
+                self.assertTrue(out.exists())
+                self.assertEqual(cv2.imread(str(out)).shape, (72, 128, 3))
+                self.assertFalse((Path(tmp) / 'sort_runs' / 'live.jpg.tmp').exists())
+                before = out.stat().st_mtime_ns
+                view._publish(np.zeros((72, 128, 3), np.uint8))  # throttled: too soon after the last write
+                self.assertEqual(out.stat().st_mtime_ns, before)
+            finally:
+                g.sorter.OUTPUT_DIR = saved
+
+
 if __name__ == '__main__':
     unittest.main()
 
